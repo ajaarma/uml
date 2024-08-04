@@ -1,0 +1,130 @@
+library(MASS)
+library(mclust)
+library(ggplot2)
+
+script <- function()
+{
+  # first generate 2000 data points from a mixture of 5 gaussians
+  d <- generate.data(2000, 2, c(-2,2), 4)
+
+  # plot the data and the truth
+  plot.mixture(d$locs, d$z, d$obs)
+  # plot the data alone
+  plot.data(d$obs)
+
+  # run EM on the data
+  one <- run.em(k=2, x=d$obs)
+
+  # plot the run of EM
+  plot.em.run(one, d$obs)
+
+  # run EM 100 times
+  runs <- sapply(1:100, function (i) list(run.em(5, x=d$obs)))
+
+  # let's look at the local optima
+  df <- ldply(1:100, function (i) cbind(run=i, runs[[i]]$lhood))
+  ggplot(data=df, aes(x=iter, y=lhood, group=run)) + geom_line(alpha=0.5)
+
+  # get the final log likelihoods for each run
+  lls <- laply(runs, function (run) run$estep$loglik)
+
+  # get the minimum and plot it
+  which.min(lls)
+  plot.em.run(runs[[67]], d$obs)
+  # get the maximum and plot it
+  which.max(lls)
+  plot.em.run(runs[[93]], d$obs)
+  # tada (?)
+}
+
+# ------------------------------------------------------------------------
+
+# generate data from a mixture of 2d gaussians
+
+generate.data <- function(n, k, prior.mean, prior.var)
+{
+  p <- length(prior.mean)
+
+  # generate mixture locations from the prior
+  locs <- mvrnorm(k, mu=prior.mean, Sigma=diag(prior.var, 2))
+  vars <- rgamma(k, shape=1, scale=0.25)
+  # generate the data
+  obs <- matrix(0, nrow=n, ncol=p)
+  z <- numeric(n)
+  for (i in 1:n)
+  {
+    # draw the cluster uniformly at random
+    z[i] <- sample(1:k, 1)
+    # draw the observation from the corresponding mixture location
+    obs[i,] <- mvrnorm(1, mu=locs[z[i],], Sigma=diag(vars[z[i]],p))
+  }
+  list(locs=locs, vars=vars, z=z, obs=obs)
+}
+
+# run EM
+
+run.em <- function(k, x)
+{
+  # compute the number of data points
+  n <- dim(x)[1]
+  # initialize each data point to a random cluster
+  init.z <- unmap(sample(1:k, n, replace=T))
+  # compute the first "m step" with those posteriors
+  mstep <- mstep(modelName="VII", data = x, z = init.z)
+  estep <- estep(modelName="VII", data=x, parameters=mstep$parameters)
+  iter <- 1
+
+  lhood <- data.frame(iter=iter, lhood=estep$loglik)
+  repeat
+  {
+    iter <- iter + 1
+    mstep <- mstep(modelName="VII", data=x, z=estep$z)
+    estep <- estep(modelName="VII", data=x, parameters=mstep$parameters)
+    lhood <- rbind(lhood, c(iter=iter, lhood=estep$loglik))
+    conv <- abs((lhood[iter,"lhood"] - lhood[iter-1,"lhood"]) / lhood[iter-1,"lhood"])
+    # cat(sprintf("%03d : %02.3g\n", iter, conv))
+    if (conv < 1e-5) break
+  }
+  list(estep=estep, mstep=mstep, lhood=lhood)
+}
+
+
+plot.em.run <- function(run, x)
+{
+  z <- apply(run$estep$z, 1, function (x) which.max(x))
+  plot.mixture(locs=t(run$mstep$parameters$mean), z=z, obs=x)
+}
+
+
+# ------------------------------------------------------------------------
+#
+# helper functions
+#
+#
+
+
+# plot 2d data from a mixture
+
+plot.mixture <- function(locs, z, obs)
+{
+  stopifnot(dim(obs)[2]==2)
+  z <- as.factor(z)
+  df1 <- data.frame(x=obs[,1], y=obs[,2], z=z)
+  df2 <- data.frame(x=locs[,1], y=locs[,2])
+  p <- ggplot()
+  p <- p + geom_point(data=df1, aes(x=x, y=y, colour=z), shape=16, size=2, alpha=0.75)
+  p <- p + geom_point(data=df2, aes(x=x, y=y), shape=16, size=3)
+  p <- p + opts(legend.position="none")
+  p
+}
+
+# plot 2d data as a scatter plot
+
+plot.data <- function(dat)
+{
+  stopifnot(dim(dat)[2]==2)
+  df1 <- data.frame(x=dat[,1], y=dat[,2])
+  p <- ggplot()
+  p <- p + geom_point(data=df1, aes(x=x, y=y), size=2, alpha=0.75)
+  p
+}
